@@ -189,8 +189,8 @@
     const canvasWrap = document.querySelector('.canvas-wrap');
 
     const BASE_ASPECT = canvas.width / canvas.height;
-    const DRAG_THRESHOLD = 6;
-    const CLICK_EDIT_THRESHOLD = 10;
+    const DRAG_START_THRESHOLD = 10; // pixels of movement before we treat it as a drag
+    const EDIT_TAP_SLOP = 18; // allow small finger jitter to still count as an edit tap
     let drawing = false;
     let currentTool = 'pen';
     let activeTextInput = null;
@@ -198,7 +198,6 @@
     let draggingText = null;
     let dragOffset = { x: 0, y: 0 };
     let pointerDownOnText = null;
-    let pointerMoved = false;
 
     const strokes = [];
     const texts = [];
@@ -248,7 +247,6 @@
       if (tool !== 'text') commitActiveText();
       currentTool = tool;
       pointerDownOnText = null;
-      pointerMoved = false;
       draggingText = null;
       [penBtn, eraseBtn, textBtn].forEach(btn => btn.classList.remove('active'));
       if (tool === 'pen') penBtn.classList.add('active');
@@ -354,7 +352,6 @@
     function start(e) {
       if (e.touches) e.preventDefault();
       const pos = getPos(e);
-      pointerMoved = false;
 
       if (currentTool === 'text') {
         commitActiveText();
@@ -401,25 +398,24 @@
       if (currentTool === 'text') {
         if (pointerDownOnText) {
           const { textObj } = pointerDownOnText;
-          const maxDist = pointerDownOnText.maxDist || 0;
-          const clickLike = maxDist <= CLICK_EDIT_THRESHOLD;
-          const wasDragged = !!draggingText;
+          const totalDist = pointerDownOnText.maxDist || 0;
+          const shouldEdit = totalDist <= EDIT_TAP_SLOP;
 
-          if (wasDragged && clickLike && pointerDownOnText.original) {
+          if (draggingText && shouldEdit && pointerDownOnText.original) {
             textObj.x = pointerDownOnText.original.x;
             textObj.y = pointerDownOnText.original.y;
             textObj.baseWidth = pointerDownOnText.original.baseWidth;
             textObj.baseHeight = pointerDownOnText.original.baseHeight;
-            redrawAll();
           }
 
-          if (!wasDragged || clickLike) {
+          if (shouldEdit) {
             const metrics = measureTextBox(textObj);
             placeTextInput({ x: metrics.x, y: metrics.y }, textObj);
+          } else {
+            redrawAll();
           }
         }
         pointerDownOnText = null;
-        pointerMoved = false;
         draggingText = null;
         canvas.style.cursor = 'text';
         return;
@@ -441,13 +437,12 @@
           pointerDownOnText.lastX = pos.x;
           pointerDownOnText.lastY = pos.y;
           pointerDownOnText.maxDist = Math.max(pointerDownOnText.maxDist, dist);
-          if (!draggingText && dist > DRAG_THRESHOLD) {
+          if (!draggingText && dist > DRAG_START_THRESHOLD) {
             draggingText = pointerDownOnText.textObj;
             dragOffset = { x: pointerDownOnText.offsetX, y: pointerDownOnText.offsetY };
             canvas.style.cursor = 'move';
           }
           if (draggingText) {
-            pointerMoved = true;
             moveDraggingText(pos);
           }
         }
@@ -624,6 +619,7 @@
     canvas.addEventListener('mouseup', end);
     canvas.addEventListener('mouseleave', end);
     canvas.addEventListener('touchend', end);
+    canvas.addEventListener('touchcancel', end);
 
     penBtn.addEventListener('click', () => setTool('pen'));
     eraseBtn.addEventListener('click', () => setTool('erase'));
