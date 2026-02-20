@@ -195,6 +195,31 @@
     const clearBtn = document.getElementById('clearBtn');
     const saveBtn = document.getElementById('saveBtn');
 
+    function resizeCanvas(preserve = true) {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      let prev = null;
+
+      if (preserve) {
+        prev = document.createElement('canvas');
+        prev.width = canvas.width;
+        prev.height = canvas.height;
+        prev.getContext('2d').drawImage(canvas, 0, 0);
+      }
+
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(dpr, dpr);
+
+      if (prev) {
+        ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, rect.width, rect.height);
+      }
+    }
+
     function setTool(tool) {
       if (tool !== 'text') commitActiveText();
       currentTool = tool;
@@ -209,7 +234,14 @@
       const rect = canvas.getBoundingClientRect();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
       const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      return [clientX - rect.left, clientY - rect.top];
+      const cssX = clientX - rect.left;
+      const cssY = clientY - rect.top;
+      return {
+        x: cssX,
+        y: cssY,
+        cssX,
+        cssY
+      };
     }
 
     function start(e) {
@@ -219,7 +251,9 @@
         return;
       }
       drawing = true;
-      [lastX, lastY] = getPos(e);
+      const { x, y } = getPos(e);
+      lastX = x;
+      lastY = y;
     }
 
     function end() {
@@ -229,7 +263,8 @@
 
     function draw(e) {
       if (!drawing || currentTool === 'text') return;
-      const [x, y] = getPos(e);
+      if (e.touches) e.preventDefault();
+      const { x, y } = getPos(e);
       const erasing = currentTool === 'erase';
       ctx.strokeStyle = erasing ? '#fff' : colorPicker.value;
       ctx.lineWidth = erasing ? parseInt(sizeSlider.value, 10) * 3 : sizeSlider.value;
@@ -239,20 +274,21 @@
       ctx.moveTo(lastX, lastY);
       ctx.lineTo(x, y);
       ctx.stroke();
-      [lastX, lastY] = [x, y];
+      lastX = x;
+      lastY = y;
     }
 
     function placeTextInput(e) {
       commitActiveText();
-      const [x, y] = getPos(e);
+      const pos = getPos(e);
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'text-input';
-      input.style.left = `${x}px`;
-      input.style.top = `${y}px`;
+      input.style.left = `${pos.cssX}px`;
+      input.style.top = `${pos.cssY}px`;
       input.placeholder = 'Type and Enter';
-      input.dataset.x = x;
-      input.dataset.y = y;
+      input.dataset.x = pos.x;
+      input.dataset.y = pos.y;
 
       input.addEventListener('keydown', (evt) => {
         if (evt.key === 'Enter') commitActiveText();
@@ -291,7 +327,7 @@
     canvas.addEventListener('mousedown', start);
     canvas.addEventListener('touchstart', start, { passive: false });
     canvas.addEventListener('mousemove', draw);
-    canvas.addEventListener('touchmove', draw);
+    canvas.addEventListener('touchmove', draw, { passive: false });
     canvas.addEventListener('mouseup', end);
     canvas.addEventListener('mouseleave', end);
     canvas.addEventListener('touchend', end);
@@ -313,6 +349,8 @@
       link.click();
     });
 
+    window.addEventListener('resize', () => resizeCanvas(true));
+    resizeCanvas(false);
     setTool('pen');
   </script>
 </body>
