@@ -187,6 +187,7 @@
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d');
     const canvasWrap = document.querySelector('.canvas-wrap');
+    canvas.style.touchAction = 'none';
 
     const BASE_ASPECT = canvas.width / canvas.height;
     const DRAG_START_THRESHOLD = 10; // pixels of movement before we treat it as a drag
@@ -200,6 +201,7 @@
     let dragOffset = { x: 0, y: 0 };
     let pointerDownOnText = null;
     let pointerDownBlank = null;
+    let activePointerId = null;
 
     const strokes = [];
     const texts = [];
@@ -353,7 +355,14 @@
     }
 
     function start(e) {
-      if (e.touches) e.preventDefault();
+      if (activePointerId !== null && e.pointerId !== undefined && activePointerId !== e.pointerId) return;
+      if (e.pointerType === 'touch' || e.touches) e.preventDefault();
+      if (e.pointerId !== undefined) {
+        activePointerId = e.pointerId;
+        if (canvas.setPointerCapture) {
+          canvas.setPointerCapture(e.pointerId);
+        }
+      }
       const pos = getPos(e);
 
       if (currentTool === 'text') {
@@ -368,19 +377,15 @@
             startY: pos.y,
             maxDist: 0,
             dragging: false,
-            original: {
-              x: hit.textObj.x,
-              y: hit.textObj.y,
-              baseWidth: hit.textObj.baseWidth,
-              baseHeight: hit.textObj.baseHeight
-            }
+            pointerId: e.pointerId ?? 'mouse'
           };
           return;
         }
         pointerDownBlank = {
           startX: pos.x,
           startY: pos.y,
-          maxDist: 0
+          maxDist: 0,
+          pointerId: e.pointerId ?? 'mouse'
         };
         return;
       }
@@ -400,7 +405,10 @@
       redrawAll();
     }
 
-    function end() {
+    function end(e) {
+      if (activePointerId !== null && e?.pointerId !== undefined && e.pointerId !== activePointerId) return;
+      if (e && (e.pointerType === 'touch' || e.touches)) e.preventDefault();
+
       if (currentTool === 'text') {
         if (pointerDownOnText) {
           const totalDist = pointerDownOnText.maxDist || 0;
@@ -422,21 +430,27 @@
         pointerDownBlank = null;
         draggingText = null;
         canvas.style.cursor = 'text';
-        return;
+      } else {
+        drawing = false;
+        currentStroke = null;
+        draggingText = null;
+        canvas.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
       }
 
-      drawing = false;
-      currentStroke = null;
-      draggingText = null;
-      canvas.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
+      if (e && e.pointerId !== undefined && canvas.hasPointerCapture && canvas.hasPointerCapture(e.pointerId) && canvas.releasePointerCapture) {
+        canvas.releasePointerCapture(e.pointerId);
+      }
+      activePointerId = null;
+      redrawAll();
     }
 
     function draw(e) {
-      if (e.touches) e.preventDefault();
+      if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+      if (e.pointerType === 'touch' || e.touches) e.preventDefault();
       const pos = getPos(e);
 
       if (currentTool === 'text') {
-        if (pointerDownOnText) {
+        if (pointerDownOnText && (pointerDownOnText.pointerId === undefined || pointerDownOnText.pointerId === (e.pointerId ?? 'mouse'))) {
           const dist = Math.hypot(pos.x - pointerDownOnText.startX, pos.y - pointerDownOnText.startY);
           pointerDownOnText.maxDist = Math.max(pointerDownOnText.maxDist, dist);
           if (!pointerDownOnText.dragging && dist > DRAG_START_THRESHOLD) {
@@ -449,7 +463,7 @@
             moveDraggingText(pos);
           }
         }
-        if (pointerDownBlank) {
+        if (pointerDownBlank && (pointerDownBlank.pointerId === undefined || pointerDownBlank.pointerId === (e.pointerId ?? 'mouse'))) {
           const dist = Math.hypot(pos.x - pointerDownBlank.startX, pos.y - pointerDownBlank.startY);
           pointerDownBlank.maxDist = Math.max(pointerDownBlank.maxDist, dist);
         }
@@ -619,14 +633,11 @@
       return null;
     }
 
-    canvas.addEventListener('mousedown', start);
-    canvas.addEventListener('touchstart', start, { passive: false });
-    canvas.addEventListener('mousemove', draw);
-    canvas.addEventListener('touchmove', draw, { passive: false });
-    canvas.addEventListener('mouseup', end);
-    canvas.addEventListener('mouseleave', end);
-    canvas.addEventListener('touchend', end);
-    canvas.addEventListener('touchcancel', end);
+    canvas.addEventListener('pointerdown', start);
+    canvas.addEventListener('pointermove', draw);
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+    canvas.addEventListener('pointerleave', end);
 
     penBtn.addEventListener('click', () => setTool('pen'));
     eraseBtn.addEventListener('click', () => setTool('erase'));
