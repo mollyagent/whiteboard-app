@@ -306,6 +306,14 @@
       ctx.font = `${fontSize}px ${textObj.fontFamily}`;
       ctx.textBaseline = 'top';
       ctx.fillText(textObj.text, textObj.x * scaleX, textObj.y * scaleY);
+      
+      // Draw selection outline if this text is being dragged
+      if (draggingText === textObj) {
+        const metrics = measureTextBox(textObj);
+        ctx.strokeStyle = 'rgba(45, 127, 249, 0.6)'; // Semi-transparent blue
+        ctx.lineWidth = 2;
+        ctx.strokeRect(metrics.x - 2, metrics.y - 2, metrics.width + 4, metrics.height + 4);
+      }
     }
 
     function redrawAll() {
@@ -317,6 +325,9 @@
 
     function start(e) {
       if (e.touches) e.preventDefault();
+      if (currentTool === 'text') {
+        e.preventDefault(); // Prevent default to keep text input focused
+      }
       const pos = getPos(e);
 
       if (currentTool === 'text') {
@@ -325,6 +336,7 @@
         if (hit) {
           draggingText = hit.textObj;
           dragOffset = { x: pos.x - hit.metrics.x, y: pos.y - hit.metrics.y };
+          canvas.style.cursor = 'move';
           return;
         }
         placeTextInput(pos);
@@ -350,6 +362,7 @@
       drawing = false;
       currentStroke = null;
       draggingText = null;
+      canvas.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
     }
 
     function draw(e) {
@@ -394,21 +407,35 @@
       input.dataset.baseWidth = width;
       input.dataset.baseHeight = height;
 
-      input.addEventListener('keydown', (evt) => {
+      const handleKeydown = (evt) => {
         if (evt.key === 'Enter') commitActiveText();
         if (evt.key === 'Escape') removeActiveText();
-      });
+      };
 
-      input.addEventListener('blur', commitActiveText);
+      const handleBlur = () => commitActiveText();
+
+      input.addEventListener('keydown', handleKeydown);
+      input.addEventListener('blur', handleBlur);
 
       canvasWrap.appendChild(input);
       activeTextInput = input;
       input.focus();
       input.select();
+      
+      // Store handlers for cleanup
+      input._keydownHandler = handleKeydown;
+      input._blurHandler = handleBlur;
     }
 
     function removeActiveText() {
       if (activeTextInput && activeTextInput.parentNode) {
+        // Remove event listeners first
+        if (activeTextInput._keydownHandler) {
+          activeTextInput.removeEventListener('keydown', activeTextInput._keydownHandler);
+        }
+        if (activeTextInput._blurHandler) {
+          activeTextInput.removeEventListener('blur', activeTextInput._blurHandler);
+        }
         activeTextInput.parentNode.removeChild(activeTextInput);
       }
       activeTextInput = null;
