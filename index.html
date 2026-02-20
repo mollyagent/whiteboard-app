@@ -130,15 +130,21 @@
 
     .text-input {
       position: absolute;
-      min-width: 160px;
-      padding: 6px 8px;
+      min-width: 200px;
+      max-width: calc(100% - 24px);
+      width: auto;
+      min-height: 40px;
+      padding: 8px 10px;
       border: 1px solid var(--border);
       border-radius: 8px;
       font: 600 16px 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      line-height: 1.3;
       color: var(--text);
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
       outline: none;
       background: #fff;
+      resize: both;
+      white-space: pre-wrap;
     }
 
     @media (max-width: 900px) {
@@ -183,12 +189,15 @@
     const canvasWrap = document.querySelector('.canvas-wrap');
 
     const BASE_ASPECT = canvas.width / canvas.height;
+    const DRAG_THRESHOLD = 3;
     let drawing = false;
     let currentTool = 'pen';
     let activeTextInput = null;
     let currentStroke = null;
     let draggingText = null;
     let dragOffset = { x: 0, y: 0 };
+    let pointerDownOnText = null;
+    let pointerMoved = false;
 
     const strokes = [];
     const texts = [];
@@ -203,6 +212,7 @@
 
     const FONT_FAMILY = '"Inter", system-ui, -apple-system, "Segoe UI", sans-serif';
     const DEFAULT_FONT_SIZE = 22;
+    const LINE_HEIGHT = 1.3;
 
     function getCanvasCssSize() {
       const rect = canvas.getBoundingClientRect();
@@ -236,6 +246,9 @@
     function setTool(tool) {
       if (tool !== 'text') commitActiveText();
       currentTool = tool;
+      pointerDownOnText = null;
+      pointerMoved = false;
+      draggingText = null;
       [penBtn, eraseBtn, textBtn].forEach(btn => btn.classList.remove('active'));
       if (tool === 'pen') penBtn.classList.add('active');
       if (tool === 'erase') eraseBtn.classList.add('active');
@@ -281,18 +294,27 @@
       const scaleX = cw / textObj.baseWidth;
       const scaleY = ch / textObj.baseHeight;
       const fontSize = textObj.fontSize * ((scaleX + scaleY) / 2);
+      const lines = textObj.text.split('\n');
+
       ctx.save();
       ctx.font = `${fontSize}px ${textObj.fontFamily}`;
-      const metrics = ctx.measureText(textObj.text);
+      let maxWidth = 0;
+      lines.forEach(line => {
+        const w = ctx.measureText(line || ' ').width;
+        if (w > maxWidth) maxWidth = w;
+      });
       ctx.restore();
-      const textWidth = metrics.width;
-      const textHeight = fontSize * 1.2;
+
+      const lineHeight = fontSize * LINE_HEIGHT;
+      const textHeight = lineHeight * lines.length;
+
       return {
         x: textObj.x * scaleX,
         y: textObj.y * scaleY,
-        width: textWidth,
+        width: maxWidth,
         height: textHeight,
         fontSize,
+        lineHeight,
         scaleX,
         scaleY
       };
@@ -302,15 +324,20 @@
       const scaleX = canvasWidth / textObj.baseWidth;
       const scaleY = canvasHeight / textObj.baseHeight;
       const fontSize = textObj.fontSize * ((scaleX + scaleY) / 2);
+      const lineHeight = fontSize * LINE_HEIGHT;
+      const lines = textObj.text.split('\n');
       ctx.fillStyle = textObj.color;
       ctx.font = `${fontSize}px ${textObj.fontFamily}`;
       ctx.textBaseline = 'top';
-      ctx.fillText(textObj.text, textObj.x * scaleX, textObj.y * scaleY);
+      const startX = textObj.x * scaleX;
+      const startY = textObj.y * scaleY;
+      lines.forEach((line, idx) => {
+        ctx.fillText(line, startX, startY + idx * lineHeight);
+      });
       
-      // Draw selection outline if this text is being dragged
       if (draggingText === textObj) {
         const metrics = measureTextBox(textObj);
-        ctx.strokeStyle = 'rgba(45, 127, 249, 0.6)'; // Semi-transparent blue
+        ctx.strokeStyle = 'rgba(45, 127, 249, 0.6)';
         ctx.lineWidth = 2;
         ctx.strokeRect(metrics.x - 2, metrics.y - 2, metrics.width + 4, metrics.height + 4);
       }
@@ -325,18 +352,20 @@
 
     function start(e) {
       if (e.touches) e.preventDefault();
-      if (currentTool === 'text') {
-        e.preventDefault(); // Prevent default to keep text input focused
-      }
       const pos = getPos(e);
+      pointerMoved = false;
 
       if (currentTool === 'text') {
         commitActiveText();
         const hit = findTextAtPosition(pos);
         if (hit) {
-          draggingText = hit.textObj;
-          dragOffset = { x: pos.x - hit.metrics.x, y: pos.y - hit.metrics.y };
-          canvas.style.cursor = 'move';
+          pointerDownOnText = {
+            textObj: hit.textObj,
+            offsetX: pos.x - hit.metrics.x,
+            offsetY: pos.y - hit.metrics.y,
+            startX: pos.x,
+            startY: pos.y
+          };
           return;
         }
         placeTextInput(pos);
@@ -359,6 +388,19 @@
     }
 
     function end() {
+      if (currentTool === 'text') {
+        if (pointerDownOnText && !pointerMoved && !draggingText) {
+          const { textObj } = pointerDownOnText;
+          const metrics = measureTextBox(textObj);
+          placeTextInput({ x: metrics.x, y: metrics.y }, textObj);
+        }
+        pointerDownOnText = null;
+        pointerMoved = false;
+        draggingText = null;
+        canvas.style.cursor = 'text';
+        return;
+      }
+
       drawing = false;
       currentStroke = null;
       draggingText = null;
@@ -369,12 +411,23 @@
       if (e.touches) e.preventDefault();
       const pos = getPos(e);
 
-      if (draggingText) {
-        moveDraggingText(pos);
+      if (currentTool === 'text') {
+        if (pointerDownOnText) {
+          const dist = Math.hypot(pos.x - pointerDownOnText.startX, pos.y - pointerDownOnText.startY);
+          if (!draggingText && dist > DRAG_THRESHOLD) {
+            draggingText = pointerDownOnText.textObj;
+            dragOffset = { x: pointerDownOnText.offsetX, y: pointerDownOnText.offsetY };
+            canvas.style.cursor = 'move';
+          }
+          if (draggingText) {
+            pointerMoved = true;
+            moveDraggingText(pos);
+          }
+        }
         return;
       }
 
-      if (!drawing || currentTool === 'text') return;
+      if (!drawing) return;
       addPointToStroke(pos);
       redrawAll();
     }
@@ -393,48 +446,84 @@
       redrawAll();
     }
 
-    function placeTextInput(pos) {
-      removeActiveText();
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'text-input';
-      input.style.left = `${pos.x}px`;
-      input.style.top = `${pos.y}px`;
-      input.placeholder = 'Type and Enter';
+    function createTextAreaElement(pos, existingTextObj = null) {
+      const textarea = document.createElement('textarea');
+      textarea.className = 'text-input';
+      textarea.style.left = `${pos.x}px`;
+      textarea.style.top = `${pos.y}px`;
+      textarea.placeholder = 'Enter for newline · click away or ⌘/Ctrl+Enter to save';
+
       const { width, height } = getCanvasCssSize();
-      input.dataset.x = pos.x;
-      input.dataset.y = pos.y;
-      input.dataset.baseWidth = width;
-      input.dataset.baseHeight = height;
+      const baseWidth = width;
+      const baseHeight = height;
+
+      textarea.dataset.x = pos.x;
+      textarea.dataset.y = pos.y;
+      textarea.dataset.baseWidth = baseWidth;
+      textarea.dataset.baseHeight = baseHeight;
+      textarea.style.color = existingTextObj ? existingTextObj.color : colorPicker.value;
+
+      if (existingTextObj) {
+        textarea.value = existingTextObj.text;
+        colorPicker.value = existingTextObj.color;
+        textarea._editingTarget = existingTextObj;
+        const metrics = measureTextBox(existingTextObj);
+        textarea.style.width = `${Math.max(metrics.width + 16, 200)}px`;
+        textarea.style.height = `${Math.max(metrics.height + 12, textarea.scrollHeight)}px`;
+      }
+
+      return textarea;
+    }
+
+    function placeTextInput(pos, existingTextObj = null) {
+      removeActiveText();
+      const input = createTextAreaElement(pos, existingTextObj);
+
+      const adjustHeight = () => {
+        input.style.height = 'auto';
+        input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+      };
 
       const handleKeydown = (evt) => {
-        if (evt.key === 'Enter') commitActiveText();
-        if (evt.key === 'Escape') removeActiveText();
+        if ((evt.key === 'Enter' && (evt.metaKey || evt.ctrlKey))) {
+          evt.preventDefault();
+          commitActiveText();
+        }
+        if (evt.key === 'Escape') {
+          evt.preventDefault();
+          removeActiveText();
+          redrawAll();
+        }
       };
 
       const handleBlur = () => commitActiveText();
 
       input.addEventListener('keydown', handleKeydown);
+      input.addEventListener('input', adjustHeight);
       input.addEventListener('blur', handleBlur);
 
       canvasWrap.appendChild(input);
       activeTextInput = input;
+      adjustHeight();
       input.focus();
       input.select();
-      
+
       // Store handlers for cleanup
       input._keydownHandler = handleKeydown;
       input._blurHandler = handleBlur;
+      input._adjustHeight = adjustHeight;
     }
 
     function removeActiveText() {
       if (activeTextInput && activeTextInput.parentNode) {
-        // Remove event listeners first
         if (activeTextInput._keydownHandler) {
           activeTextInput.removeEventListener('keydown', activeTextInput._keydownHandler);
         }
         if (activeTextInput._blurHandler) {
           activeTextInput.removeEventListener('blur', activeTextInput._blurHandler);
+        }
+        if (activeTextInput._adjustHeight) {
+          activeTextInput.removeEventListener('input', activeTextInput._adjustHeight);
         }
         activeTextInput.parentNode.removeChild(activeTextInput);
       }
@@ -443,24 +532,46 @@
 
     function commitActiveText() {
       if (!activeTextInput) return;
-      const text = activeTextInput.value.trim();
+      const rawText = activeTextInput.value.replace(/\r\n/g, '\n');
+      const text = rawText;
       const x = parseFloat(activeTextInput.dataset.x);
       const y = parseFloat(activeTextInput.dataset.y);
       const baseWidth = parseFloat(activeTextInput.dataset.baseWidth);
       const baseHeight = parseFloat(activeTextInput.dataset.baseHeight);
-      if (text) {
-        texts.push({
-          text,
-          x,
-          y,
-          color: colorPicker.value,
-          fontSize: DEFAULT_FONT_SIZE,
-          fontFamily: FONT_FAMILY,
-          baseWidth,
-          baseHeight
-        });
+      const editingTarget = activeTextInput._editingTarget || null;
+      const color = colorPicker.value;
+
+      if (text.trim()) {
+        if (editingTarget) {
+          editingTarget.text = text;
+          editingTarget.x = x;
+          editingTarget.y = y;
+          editingTarget.baseWidth = baseWidth;
+          editingTarget.baseHeight = baseHeight;
+          editingTarget.color = color;
+          editingTarget.fontSize = DEFAULT_FONT_SIZE;
+          editingTarget.fontFamily = FONT_FAMILY;
+        } else {
+          texts.push({
+            text,
+            x,
+            y,
+            color,
+            fontSize: DEFAULT_FONT_SIZE,
+            fontFamily: FONT_FAMILY,
+            baseWidth,
+            baseHeight
+          });
+        }
         redrawAll();
+      } else if (editingTarget) {
+        const idx = texts.indexOf(editingTarget);
+        if (idx !== -1) {
+          texts.splice(idx, 1);
+          redrawAll();
+        }
       }
+
       removeActiveText();
     }
 
