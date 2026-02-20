@@ -191,6 +191,7 @@
     const BASE_ASPECT = canvas.width / canvas.height;
     const DRAG_START_THRESHOLD = 10; // pixels of movement before we treat it as a drag
     const EDIT_TAP_SLOP = 18; // allow small finger jitter to still count as an edit tap
+
     let drawing = false;
     let currentTool = 'pen';
     let activeTextInput = null;
@@ -198,6 +199,7 @@
     let draggingText = null;
     let dragOffset = { x: 0, y: 0 };
     let pointerDownOnText = null;
+    let pointerDownBlank = null;
 
     const strokes = [];
     const texts = [];
@@ -247,6 +249,7 @@
       if (tool !== 'text') commitActiveText();
       currentTool = tool;
       pointerDownOnText = null;
+      pointerDownBlank = null;
       draggingText = null;
       [penBtn, eraseBtn, textBtn].forEach(btn => btn.classList.remove('active'));
       if (tool === 'pen') penBtn.classList.add('active');
@@ -333,7 +336,7 @@
       lines.forEach((line, idx) => {
         ctx.fillText(line, startX, startY + idx * lineHeight);
       });
-      
+
       if (draggingText === textObj) {
         const metrics = measureTextBox(textObj);
         ctx.strokeStyle = 'rgba(45, 127, 249, 0.6)';
@@ -363,9 +366,8 @@
             offsetY: pos.y - hit.metrics.y,
             startX: pos.x,
             startY: pos.y,
-            lastX: pos.x,
-            lastY: pos.y,
             maxDist: 0,
+            dragging: false,
             original: {
               x: hit.textObj.x,
               y: hit.textObj.y,
@@ -375,7 +377,11 @@
           };
           return;
         }
-        placeTextInput(pos);
+        pointerDownBlank = {
+          startX: pos.x,
+          startY: pos.y,
+          maxDist: 0
+        };
         return;
       }
 
@@ -397,25 +403,23 @@
     function end() {
       if (currentTool === 'text') {
         if (pointerDownOnText) {
-          const { textObj } = pointerDownOnText;
           const totalDist = pointerDownOnText.maxDist || 0;
-          const shouldEdit = totalDist <= EDIT_TAP_SLOP;
-
-          if (draggingText && shouldEdit && pointerDownOnText.original) {
-            textObj.x = pointerDownOnText.original.x;
-            textObj.y = pointerDownOnText.original.y;
-            textObj.baseWidth = pointerDownOnText.original.baseWidth;
-            textObj.baseHeight = pointerDownOnText.original.baseHeight;
-          }
+          const shouldEdit = totalDist <= EDIT_TAP_SLOP && !pointerDownOnText.dragging;
 
           if (shouldEdit) {
-            const metrics = measureTextBox(textObj);
-            placeTextInput({ x: metrics.x, y: metrics.y }, textObj);
+            const metrics = measureTextBox(pointerDownOnText.textObj);
+            placeTextInput({ x: metrics.x, y: metrics.y }, pointerDownOnText.textObj);
           } else {
             redrawAll();
           }
+        } else if (pointerDownBlank) {
+          const shouldCreate = pointerDownBlank.maxDist <= EDIT_TAP_SLOP;
+          if (shouldCreate) {
+            placeTextInput({ x: pointerDownBlank.startX, y: pointerDownBlank.startY });
+          }
         }
         pointerDownOnText = null;
+        pointerDownBlank = null;
         draggingText = null;
         canvas.style.cursor = 'text';
         return;
@@ -434,17 +438,20 @@
       if (currentTool === 'text') {
         if (pointerDownOnText) {
           const dist = Math.hypot(pos.x - pointerDownOnText.startX, pos.y - pointerDownOnText.startY);
-          pointerDownOnText.lastX = pos.x;
-          pointerDownOnText.lastY = pos.y;
           pointerDownOnText.maxDist = Math.max(pointerDownOnText.maxDist, dist);
-          if (!draggingText && dist > DRAG_START_THRESHOLD) {
+          if (!pointerDownOnText.dragging && dist > DRAG_START_THRESHOLD) {
+            pointerDownOnText.dragging = true;
             draggingText = pointerDownOnText.textObj;
             dragOffset = { x: pointerDownOnText.offsetX, y: pointerDownOnText.offsetY };
             canvas.style.cursor = 'move';
           }
-          if (draggingText) {
+          if (pointerDownOnText.dragging) {
             moveDraggingText(pos);
           }
+        }
+        if (pointerDownBlank) {
+          const dist = Math.hypot(pos.x - pointerDownBlank.startX, pos.y - pointerDownBlank.startY);
+          pointerDownBlank.maxDist = Math.max(pointerDownBlank.maxDist, dist);
         }
         return;
       }
