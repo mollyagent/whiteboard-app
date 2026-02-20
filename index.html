@@ -182,10 +182,16 @@
     const ctx = canvas.getContext('2d');
     const canvasWrap = document.querySelector('.canvas-wrap');
 
+    const BASE_ASPECT = canvas.width / canvas.height;
     let drawing = false;
-    let lastX = 0, lastY = 0;
     let currentTool = 'pen';
     let activeTextInput = null;
+    let currentStroke = null;
+    let draggingText = null;
+    let dragOffset = { x: 0, y: 0 };
+
+    const strokes = [];
+    const texts = [];
 
     const colorPicker = document.getElementById('color');
     const sizeSlider = document.getElementById('size');
@@ -195,29 +201,36 @@
     const clearBtn = document.getElementById('clearBtn');
     const saveBtn = document.getElementById('saveBtn');
 
-    function resizeCanvas(preserve = true) {
+    const FONT_FAMILY = '"Inter", system-ui, -apple-system, "Segoe UI", sans-serif';
+    const DEFAULT_FONT_SIZE = 22;
+
+    function getCanvasCssSize() {
       const rect = canvas.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+
+    function resizeCanvas() {
+      commitActiveText();
+      const wrapRect = canvasWrap.getBoundingClientRect();
+      const targetWidth = wrapRect.width;
+      const targetHeight = targetWidth / BASE_ASPECT;
       const dpr = window.devicePixelRatio || 1;
-      let prev = null;
 
-      if (preserve) {
-        prev = document.createElement('canvas');
-        prev.width = canvas.width;
-        prev.height = canvas.height;
-        prev.getContext('2d').drawImage(canvas, 0, 0);
-      }
-
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
+      canvas.style.width = `${targetWidth}px`;
+      canvas.style.height = `${targetHeight}px`;
+      canvas.width = Math.round(targetWidth * dpr);
+      canvas.height = Math.round(targetHeight * dpr);
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.scale(dpr, dpr);
 
-      if (prev) {
-        ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, rect.width, rect.height);
-      }
+      redrawAll();
+    }
+
+    function clearCanvasArea() {
+      const dpr = window.devicePixelRatio || 1;
+      ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
     }
 
     function setTool(tool) {
@@ -236,59 +249,150 @@
       const clientY = e.touches ? e.touches[0].clientY : e.clientY;
       const cssX = clientX - rect.left;
       const cssY = clientY - rect.top;
+      return { x: cssX, y: cssY };
+    }
+
+    function addPointToStroke(pos) {
+      if (!currentStroke) return;
+      currentStroke.points.push({ x: pos.x, y: pos.y });
+    }
+
+    function drawStroke(stroke, canvasWidth, canvasHeight) {
+      if (!stroke.points.length) return;
+      const scaleX = canvasWidth / stroke.baseWidth;
+      const scaleY = canvasHeight / stroke.baseHeight;
+      const lineWidth = stroke.size * ((scaleX + scaleY) / 2);
+
+      ctx.strokeStyle = stroke.erasing ? '#fff' : stroke.color;
+      ctx.lineWidth = lineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const pts = stroke.points;
+      ctx.moveTo(pts[0].x * scaleX, pts[0].y * scaleY);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x * scaleX, pts[i].y * scaleY);
+      }
+      ctx.stroke();
+    }
+
+    function measureTextBox(textObj) {
+      const { width: cw, height: ch } = getCanvasCssSize();
+      const scaleX = cw / textObj.baseWidth;
+      const scaleY = ch / textObj.baseHeight;
+      const fontSize = textObj.fontSize * ((scaleX + scaleY) / 2);
+      ctx.save();
+      ctx.font = `${fontSize}px ${textObj.fontFamily}`;
+      const metrics = ctx.measureText(textObj.text);
+      ctx.restore();
+      const textWidth = metrics.width;
+      const textHeight = fontSize * 1.2;
       return {
-        x: cssX,
-        y: cssY,
-        cssX,
-        cssY
+        x: textObj.x * scaleX,
+        y: textObj.y * scaleY,
+        width: textWidth,
+        height: textHeight,
+        fontSize,
+        scaleX,
+        scaleY
       };
     }
 
+    function drawText(textObj, canvasWidth, canvasHeight) {
+      const scaleX = canvasWidth / textObj.baseWidth;
+      const scaleY = canvasHeight / textObj.baseHeight;
+      const fontSize = textObj.fontSize * ((scaleX + scaleY) / 2);
+      ctx.fillStyle = textObj.color;
+      ctx.font = `${fontSize}px ${textObj.fontFamily}`;
+      ctx.textBaseline = 'top';
+      ctx.fillText(textObj.text, textObj.x * scaleX, textObj.y * scaleY);
+    }
+
+    function redrawAll() {
+      const { width, height } = getCanvasCssSize();
+      clearCanvasArea();
+      strokes.forEach(stroke => drawStroke(stroke, width, height));
+      texts.forEach(textObj => drawText(textObj, width, height));
+    }
+
     function start(e) {
+      if (e.touches) e.preventDefault();
+      const pos = getPos(e);
+
       if (currentTool === 'text') {
-        e.preventDefault();
-        placeTextInput(e);
+        commitActiveText();
+        const hit = findTextAtPosition(pos);
+        if (hit) {
+          draggingText = hit.textObj;
+          dragOffset = { x: pos.x - hit.metrics.x, y: pos.y - hit.metrics.y };
+          return;
+        }
+        placeTextInput(pos);
         return;
       }
+
+      commitActiveText();
       drawing = true;
-      const { x, y } = getPos(e);
-      lastX = x;
-      lastY = y;
+      const { width, height } = getCanvasCssSize();
+      currentStroke = {
+        points: [pos],
+        color: colorPicker.value,
+        size: currentTool === 'erase' ? parseInt(sizeSlider.value, 10) * 3 : parseInt(sizeSlider.value, 10),
+        erasing: currentTool === 'erase',
+        baseWidth: width,
+        baseHeight: height
+      };
+      strokes.push(currentStroke);
+      redrawAll();
     }
 
     function end() {
       drawing = false;
-      ctx.beginPath();
+      currentStroke = null;
+      draggingText = null;
     }
 
     function draw(e) {
-      if (!drawing || currentTool === 'text') return;
       if (e.touches) e.preventDefault();
-      const { x, y } = getPos(e);
-      const erasing = currentTool === 'erase';
-      ctx.strokeStyle = erasing ? '#fff' : colorPicker.value;
-      ctx.lineWidth = erasing ? parseInt(sizeSlider.value, 10) * 3 : sizeSlider.value;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(lastX, lastY);
-      ctx.lineTo(x, y);
-      ctx.stroke();
-      lastX = x;
-      lastY = y;
+      const pos = getPos(e);
+
+      if (draggingText) {
+        moveDraggingText(pos);
+        return;
+      }
+
+      if (!drawing || currentTool === 'text') return;
+      addPointToStroke(pos);
+      redrawAll();
     }
 
-    function placeTextInput(e) {
-      commitActiveText();
-      const pos = getPos(e);
+    function moveDraggingText(pos) {
+      if (!draggingText) return;
+      const { width, height } = getCanvasCssSize();
+      const scaleX = width / draggingText.baseWidth;
+      const scaleY = height / draggingText.baseHeight;
+      const newX = (pos.x - dragOffset.x) / scaleX;
+      const newY = (pos.y - dragOffset.y) / scaleY;
+      draggingText.x = newX;
+      draggingText.y = newY;
+      draggingText.baseWidth = width;
+      draggingText.baseHeight = height;
+      redrawAll();
+    }
+
+    function placeTextInput(pos) {
+      removeActiveText();
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'text-input';
-      input.style.left = `${pos.cssX}px`;
-      input.style.top = `${pos.cssY}px`;
+      input.style.left = `${pos.x}px`;
+      input.style.top = `${pos.y}px`;
       input.placeholder = 'Type and Enter';
+      const { width, height } = getCanvasCssSize();
       input.dataset.x = pos.x;
       input.dataset.y = pos.y;
+      input.dataset.baseWidth = width;
+      input.dataset.baseHeight = height;
 
       input.addEventListener('keydown', (evt) => {
         if (evt.key === 'Enter') commitActiveText();
@@ -315,13 +419,37 @@
       const text = activeTextInput.value.trim();
       const x = parseFloat(activeTextInput.dataset.x);
       const y = parseFloat(activeTextInput.dataset.y);
+      const baseWidth = parseFloat(activeTextInput.dataset.baseWidth);
+      const baseHeight = parseFloat(activeTextInput.dataset.baseHeight);
       if (text) {
-        ctx.fillStyle = colorPicker.value;
-        ctx.font = '22px "Inter", system-ui, -apple-system, "Segoe UI", sans-serif';
-        ctx.textBaseline = 'top';
-        ctx.fillText(text, x, y);
+        texts.push({
+          text,
+          x,
+          y,
+          color: colorPicker.value,
+          fontSize: DEFAULT_FONT_SIZE,
+          fontFamily: FONT_FAMILY,
+          baseWidth,
+          baseHeight
+        });
+        redrawAll();
       }
       removeActiveText();
+    }
+
+    function findTextAtPosition(pos) {
+      for (let i = texts.length - 1; i >= 0; i--) {
+        const metrics = measureTextBox(texts[i]);
+        if (
+          pos.x >= metrics.x &&
+          pos.x <= metrics.x + metrics.width &&
+          pos.y >= metrics.y &&
+          pos.y <= metrics.y + metrics.height
+        ) {
+          return { textObj: texts[i], metrics };
+        }
+      }
+      return null;
     }
 
     canvas.addEventListener('mousedown', start);
@@ -337,20 +465,23 @@
     textBtn.addEventListener('click', () => setTool('text'));
 
     clearBtn.addEventListener('click', () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      strokes.length = 0;
+      texts.length = 0;
+      clearCanvasArea();
       removeActiveText();
     });
 
     saveBtn.addEventListener('click', () => {
       commitActiveText();
+      redrawAll();
       const link = document.createElement('a');
       link.download = 'whiteboard.png';
       link.href = canvas.toDataURL('image/png');
       link.click();
     });
 
-    window.addEventListener('resize', () => resizeCanvas(true));
-    resizeCanvas(false);
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
     setTool('pen');
   </script>
 </body>
