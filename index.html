@@ -189,7 +189,8 @@
     const canvasWrap = document.querySelector('.canvas-wrap');
 
     const BASE_ASPECT = canvas.width / canvas.height;
-    const DRAG_THRESHOLD = 3;
+    const DRAG_THRESHOLD = 6;
+    const CLICK_EDIT_THRESHOLD = 10;
     let drawing = false;
     let currentTool = 'pen';
     let activeTextInput = null;
@@ -364,7 +365,16 @@
             offsetX: pos.x - hit.metrics.x,
             offsetY: pos.y - hit.metrics.y,
             startX: pos.x,
-            startY: pos.y
+            startY: pos.y,
+            lastX: pos.x,
+            lastY: pos.y,
+            maxDist: 0,
+            original: {
+              x: hit.textObj.x,
+              y: hit.textObj.y,
+              baseWidth: hit.textObj.baseWidth,
+              baseHeight: hit.textObj.baseHeight
+            }
           };
           return;
         }
@@ -389,10 +399,24 @@
 
     function end() {
       if (currentTool === 'text') {
-        if (pointerDownOnText && !pointerMoved && !draggingText) {
+        if (pointerDownOnText) {
           const { textObj } = pointerDownOnText;
-          const metrics = measureTextBox(textObj);
-          placeTextInput({ x: metrics.x, y: metrics.y }, textObj);
+          const maxDist = pointerDownOnText.maxDist || 0;
+          const clickLike = maxDist <= CLICK_EDIT_THRESHOLD;
+          const wasDragged = !!draggingText;
+
+          if (wasDragged && clickLike && pointerDownOnText.original) {
+            textObj.x = pointerDownOnText.original.x;
+            textObj.y = pointerDownOnText.original.y;
+            textObj.baseWidth = pointerDownOnText.original.baseWidth;
+            textObj.baseHeight = pointerDownOnText.original.baseHeight;
+            redrawAll();
+          }
+
+          if (!wasDragged || clickLike) {
+            const metrics = measureTextBox(textObj);
+            placeTextInput({ x: metrics.x, y: metrics.y }, textObj);
+          }
         }
         pointerDownOnText = null;
         pointerMoved = false;
@@ -414,6 +438,9 @@
       if (currentTool === 'text') {
         if (pointerDownOnText) {
           const dist = Math.hypot(pos.x - pointerDownOnText.startX, pos.y - pointerDownOnText.startY);
+          pointerDownOnText.lastX = pos.x;
+          pointerDownOnText.lastY = pos.y;
+          pointerDownOnText.maxDist = Math.max(pointerDownOnText.maxDist, dist);
           if (!draggingText && dist > DRAG_THRESHOLD) {
             draggingText = pointerDownOnText.textObj;
             dragOffset = { x: pointerDownOnText.offsetX, y: pointerDownOnText.offsetY };
