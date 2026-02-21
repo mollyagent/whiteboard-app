@@ -63,6 +63,22 @@
       align-items: center;
     }
 
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .number-input {
+      width: 64px;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+
     label { font-size: 0.9rem; color: var(--muted); }
 
     input[type="color"],
@@ -152,6 +168,7 @@
       background: #fff;
       resize: both;
       white-space: pre-wrap;
+      word-break: break-word;
     }
 
     @media (max-width: 900px) {
@@ -177,6 +194,11 @@
         <button id="textBtn" class="tool-btn">Text</button>
         <button id="boldBtn" class="tool-btn toggle-btn" title="Bold (Text tool)">B</button>
         <button id="underlineBtn" class="tool-btn toggle-btn" title="Underline (Text tool)"><span style="text-decoration: underline;">U</span></button>
+      </div>
+      <div class="controls control-group">
+        <label for="textSizeRange">Text size</label>
+        <input type="range" id="textSizeRange" min="10" max="96" value="22" step="1">
+        <input type="number" id="textSizeNumber" class="number-input" min="8" max="128" value="22">
       </div>
       <div class="controls">
         <button id="undoBtn" class="secondary">Undo</button>
@@ -220,6 +242,7 @@
     let activePointerId = null;
     let textBold = false;
     let textUnderline = false;
+    let textFontSize = DEFAULT_FONT_SIZE;
 
     let strokes = [];
     let texts = [];
@@ -240,9 +263,13 @@
     const redoBtn = document.getElementById('redoBtn');
     const clearBtn = document.getElementById('clearBtn');
     const saveBtn = document.getElementById('saveBtn');
+    const textSizeRange = document.getElementById('textSizeRange');
+    const textSizeNumber = document.getElementById('textSizeNumber');
 
     const FONT_FAMILY = '"Inter", system-ui, -apple-system, "Segoe UI", sans-serif';
     const DEFAULT_FONT_SIZE = 22;
+    const MIN_FONT_SIZE = 8;
+    const MAX_FONT_SIZE = 128;
     const LINE_HEIGHT = 1.3;
 
     const safeSetPointerCapture = (e) => {
@@ -271,6 +298,23 @@
       if (activeTextInput) {
         activeTextInput.style.fontWeight = textBold ? '700' : '600';
         activeTextInput.style.textDecoration = textUnderline ? 'underline' : 'none';
+        activeTextInput._adjustHeight?.();
+      }
+    }
+
+    function clampFontSize(val) {
+      if (Number.isNaN(val)) return DEFAULT_FONT_SIZE;
+      return Math.min(Math.max(val, MIN_FONT_SIZE), MAX_FONT_SIZE);
+    }
+
+    function syncFontSizeControls(nextSize) {
+      const safeSize = clampFontSize(nextSize);
+      textFontSize = safeSize;
+      if (textSizeRange) textSizeRange.value = safeSize;
+      if (textSizeNumber) textSizeNumber.value = safeSize;
+      if (activeTextInput) {
+        activeTextInput.style.fontSize = `${safeSize}px`;
+        activeTextInput._adjustHeight?.();
       }
     }
 
@@ -403,24 +447,85 @@
       ctx.restore();
     }
 
-    function measureTextBox(textObj) {
-      const { width: cw, height: ch } = getCanvasCssSize();
-      const baseWidth = textObj.baseWidth || cw;
-      const baseHeight = textObj.baseHeight || ch;
-      const scaleX = cw / baseWidth;
-      const scaleY = ch / baseHeight;
+    function getTextRenderInfo(textObj, canvasWidth, canvasHeight) {
+      const baseWidth = textObj.baseWidth || canvasWidth;
+      const baseHeight = textObj.baseHeight || canvasHeight;
+      const scaleX = canvasWidth / baseWidth;
+      const scaleY = canvasHeight / baseHeight;
       const fontSize = (textObj.fontSize || DEFAULT_FONT_SIZE) * ((scaleX + scaleY) / 2);
-      const lines = textObj.text.split('\n');
       const fontWeight = textObj.bold ? '700' : '600';
       const fontFamily = textObj.fontFamily || FONT_FAMILY;
+      const wrapWidth = textObj.boxWidth ? textObj.boxWidth * scaleX : null;
 
       ctx.save();
       ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-      let maxWidth = 0;
-      lines.forEach(line => {
-        const w = ctx.measureText(line || ' ').width;
-        if (w > maxWidth) maxWidth = w;
+      const measure = (line) => ctx.measureText(line || ' ').width;
+
+      const wrapWordSegments = (word) => {
+        if (!wrapWidth) return [word];
+        const segments = [];
+        let current = '';
+        for (const ch of word) {
+          const candidate = current + ch;
+          if (measure(candidate) <= wrapWidth || current === '') {
+            current = candidate;
+          } else {
+            segments.push(current);
+            current = ch;
+          }
+        }
+        if (current) segments.push(current);
+        return segments.length ? segments : [''];
+      };
+
+      const lines = [];
+      let maxLineWidth = 0;
+      const pushLine = (line) => {
+        const width = measure(line);
+        lines.push(line);
+        if (width > maxLineWidth) maxLineWidth = width;
+      };
+
+      const paragraphs = (textObj.text || '').split('\n');
+      paragraphs.forEach((paragraph) => {
+        if (!wrapWidth) {
+          pushLine(paragraph);
+          return;
+        }
+        const words = paragraph.split(' ');
+        let line = '';
+        words.forEach((word) => {
+          const candidate = line ? `${line} ${word}` : word;
+          if (line && measure(candidate) > wrapWidth) {
+            pushLine(line);
+            if (measure(word) > wrapWidth) {
+              const parts = wrapWordSegments(word);
+              parts.forEach((seg, idx) => {
+                if (idx === parts.length - 1) {
+                  line = seg;
+                } else {
+                  pushLine(seg);
+                }
+              });
+            } else {
+              line = word;
+            }
+          } else if (wrapWidth && measure(candidate) > wrapWidth) {
+            const parts = wrapWordSegments(word);
+            parts.forEach((seg, idx) => {
+              if (idx === parts.length - 1) {
+                line = seg;
+              } else {
+                pushLine(seg);
+              }
+            });
+          } else {
+            line = candidate;
+          }
+        });
+        pushLine(line);
       });
+
       ctx.restore();
 
       const lineHeight = fontSize * LINE_HEIGHT;
@@ -429,51 +534,62 @@
       return {
         x: (textObj.x || 0) * scaleX,
         y: (textObj.y || 0) * scaleY,
-        width: maxWidth,
+        width: maxLineWidth,
         height: textHeight,
         fontSize,
         lineHeight,
         scaleX,
-        scaleY
+        scaleY,
+        lines,
+        fontWeight,
+        fontFamily,
+        wrapWidth
+      };
+    }
+
+    function measureTextBox(textObj) {
+      const { width: cw, height: ch } = getCanvasCssSize();
+      const info = getTextRenderInfo(textObj, cw, ch);
+      return {
+        x: info.x,
+        y: info.y,
+        width: Math.max(info.width, info.wrapWidth || info.width),
+        height: info.height,
+        fontSize: info.fontSize,
+        lineHeight: info.lineHeight,
+        scaleX: info.scaleX,
+        scaleY: info.scaleY
       };
     }
 
     function drawText(textObj, canvasWidth, canvasHeight) {
-      const baseWidth = textObj.baseWidth || canvasWidth;
-      const baseHeight = textObj.baseHeight || canvasHeight;
-      const scaleX = canvasWidth / baseWidth;
-      const scaleY = canvasHeight / baseHeight;
-      const fontSize = (textObj.fontSize || DEFAULT_FONT_SIZE) * ((scaleX + scaleY) / 2);
-      const lineHeight = fontSize * LINE_HEIGHT;
-      const lines = textObj.text.split('\n');
-      const fontWeight = textObj.bold ? '700' : '600';
-      const fontFamily = textObj.fontFamily || FONT_FAMILY;
-      ctx.fillStyle = textObj.color;
-      ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+      const info = getTextRenderInfo(textObj, canvasWidth, canvasHeight);
+      const fillColor = textObj.color || colorPicker.value;
+      ctx.fillStyle = fillColor;
+      ctx.font = `${info.fontWeight} ${info.fontSize}px ${info.fontFamily}`;
       ctx.textBaseline = 'top';
-      const startX = (textObj.x || 0) * scaleX;
-      const startY = (textObj.y || 0) * scaleY;
-      lines.forEach((line, idx) => {
-        const lineY = startY + idx * lineHeight;
+      const startX = info.x;
+      const startY = info.y;
+      info.lines.forEach((line, idx) => {
+        const lineY = startY + idx * info.lineHeight;
         ctx.fillText(line, startX, lineY);
         if (textObj.underline) {
           const metrics = ctx.measureText(line || ' ');
-          const underlineY = lineY + fontSize * 0.88;
-          const underlineThickness = Math.max(1, fontSize * 0.07);
+          const underlineY = lineY + info.fontSize * 0.88;
+          const underlineThickness = Math.max(1, info.fontSize * 0.07);
           ctx.beginPath();
           ctx.moveTo(startX, underlineY);
           ctx.lineTo(startX + metrics.width, underlineY);
           ctx.lineWidth = underlineThickness;
-          ctx.strokeStyle = textObj.color;
+          ctx.strokeStyle = fillColor;
           ctx.stroke();
         }
       });
 
       if (draggingText === textObj) {
-        const metrics = measureTextBox(textObj);
         ctx.strokeStyle = 'rgba(45, 127, 249, 0.6)';
         ctx.lineWidth = 2;
-        ctx.strokeRect(metrics.x - 2, metrics.y - 2, metrics.width + 4, metrics.height + 4);
+        ctx.strokeRect(startX - 2, startY - 2, Math.max(info.width, info.wrapWidth || 0) + 4, info.height + 4);
       }
     }
 
@@ -656,10 +772,15 @@
     function moveDraggingText(pos) {
       if (!draggingText) return;
       const { width, height } = getCanvasCssSize();
-      const scaleX = width / draggingText.baseWidth;
-      const scaleY = height / draggingText.baseHeight;
+      const oldBaseWidth = draggingText.baseWidth || width;
+      const oldBaseHeight = draggingText.baseHeight || height;
+      const scaleX = width / oldBaseWidth;
+      const scaleY = height / oldBaseHeight;
       const newX = (pos.x - dragOffset.x) / scaleX;
       const newY = (pos.y - dragOffset.y) / scaleY;
+      if (draggingText.boxWidth) {
+        draggingText.boxWidth = draggingText.boxWidth * scaleX;
+      }
       draggingText.x = newX;
       draggingText.y = newY;
       draggingText.baseWidth = width;
@@ -680,22 +801,29 @@
 
       const useBold = existingTextObj ? !!existingTextObj.bold : textBold;
       const useUnderline = existingTextObj ? !!existingTextObj.underline : textUnderline;
+      const useFontSize = existingTextObj ? (existingTextObj.fontSize || DEFAULT_FONT_SIZE) : textFontSize;
 
       textarea.dataset.x = pos.x;
       textarea.dataset.y = pos.y;
       textarea.dataset.baseWidth = baseWidth;
       textarea.dataset.baseHeight = baseHeight;
-      textarea.style.color = existingTextObj ? existingTextObj.color : colorPicker.value;
+      textarea.style.color = existingTextObj ? (existingTextObj.color || colorPicker.value) : colorPicker.value;
       textarea.style.fontWeight = useBold ? '700' : '600';
       textarea.style.textDecoration = useUnderline ? 'underline' : 'none';
+      textarea.style.fontSize = `${useFontSize}px`;
+      textarea.style.minWidth = '160px';
 
       if (existingTextObj) {
         textarea.value = existingTextObj.text;
         colorPicker.value = existingTextObj.color;
         textarea._editingTarget = existingTextObj;
+        const scaleX = width / (existingTextObj.baseWidth || width);
         const metrics = measureTextBox(existingTextObj);
-        textarea.style.width = `${Math.max(metrics.width + 16, 200)}px`;
+        const targetWidth = existingTextObj.boxWidth ? existingTextObj.boxWidth * scaleX : Math.max(metrics.width + 16, 200);
+        textarea.style.width = `${Math.max(targetWidth, 160)}px`;
         textarea.style.height = `${Math.max(metrics.height + 12, textarea.scrollHeight)}px`;
+      } else {
+        textarea.style.width = '260px';
       }
 
       return textarea;
@@ -706,7 +834,9 @@
       if (existingTextObj) {
         textBold = !!existingTextObj.bold;
         textUnderline = !!existingTextObj.underline;
+        textFontSize = existingTextObj.fontSize || DEFAULT_FONT_SIZE;
       }
+      syncFontSizeControls(textFontSize);
       const input = createTextAreaElement(pos, existingTextObj);
 
       const adjustHeight = () => {
@@ -730,6 +860,8 @@
 
       input.addEventListener('keydown', handleKeydown);
       input.addEventListener('input', adjustHeight);
+      input.addEventListener('mouseup', adjustHeight);
+      input.addEventListener('mouseleave', adjustHeight);
       input.addEventListener('blur', handleBlur);
 
       canvasWrap.appendChild(input);
@@ -755,6 +887,8 @@
         }
         if (activeTextInput._adjustHeight) {
           activeTextInput.removeEventListener('input', activeTextInput._adjustHeight);
+          activeTextInput.removeEventListener('mouseup', activeTextInput._adjustHeight);
+          activeTextInput.removeEventListener('mouseleave', activeTextInput._adjustHeight);
         }
         activeTextInput.parentNode.removeChild(activeTextInput);
       }
@@ -774,8 +908,12 @@
       const color = colorPicker.value;
       const bold = !!textBold;
       const underline = !!textUnderline;
-      const fontSize = editingTarget ? (editingTarget.fontSize || DEFAULT_FONT_SIZE) : DEFAULT_FONT_SIZE;
+      const fontSize = clampFontSize(textFontSize || DEFAULT_FONT_SIZE);
       const fontFamily = editingTarget ? (editingTarget.fontFamily || FONT_FAMILY) : FONT_FAMILY;
+      const currentCanvasCssWidth = getCanvasCssSize().width;
+      const scaleX = currentCanvasCssWidth / baseWidth;
+      const inputRect = activeTextInput.getBoundingClientRect();
+      const boxWidth = Math.max(inputRect.width / (scaleX || 1), 40);
       let didChange = false;
 
       if (text.trim()) {
@@ -790,7 +928,8 @@
           editingTarget.fontFamily = fontFamily;
           editingTarget.bold = bold;
           editingTarget.underline = underline;
-          const keys = ['text', 'x', 'y', 'baseWidth', 'baseHeight', 'color', 'fontSize', 'fontFamily', 'bold', 'underline'];
+          editingTarget.boxWidth = boxWidth;
+          const keys = ['text', 'x', 'y', 'baseWidth', 'baseHeight', 'color', 'fontSize', 'fontFamily', 'bold', 'underline', 'boxWidth'];
           didChange = keys.some(k => editingTarget[k] !== (snapshotBefore ? snapshotBefore[k] : undefined));
         } else {
           texts.push({
@@ -802,6 +941,7 @@
             fontFamily,
             bold,
             underline,
+            boxWidth,
             baseWidth,
             baseHeight
           });
@@ -930,6 +1070,16 @@
       if (activeTextInput) activeTextInput.focus();
     });
 
+    textSizeRange.addEventListener('input', (e) => {
+      syncFontSizeControls(parseInt(e.target.value, 10));
+      if (activeTextInput) activeTextInput.focus();
+    });
+
+    textSizeNumber.addEventListener('input', (e) => {
+      syncFontSizeControls(parseInt(e.target.value, 10));
+      if (activeTextInput) activeTextInput.focus();
+    });
+
     clearBtn.addEventListener('click', () => {
       commitActiveText();
       strokes.length = 0;
@@ -969,6 +1119,7 @@
     });
 
     window.addEventListener('resize', resizeCanvas);
+    syncFontSizeControls(DEFAULT_FONT_SIZE);
     resizeCanvas();
     setTool('pen');
     syncStyleToggles();
