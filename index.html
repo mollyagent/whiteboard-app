@@ -84,6 +84,7 @@
 
     button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
     button:active { transform: translateY(0); box-shadow: none; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
 
     .canvas-wrap {
       position: relative;
@@ -171,12 +172,15 @@
       </div>
       <div class="controls">
         <button id="penBtn" class="tool-btn active">Pen</button>
+        <button id="arrowBtn" class="tool-btn">Arrow</button>
         <button id="eraseBtn" class="tool-btn">Eraser</button>
         <button id="textBtn" class="tool-btn">Text</button>
         <button id="boldBtn" class="tool-btn toggle-btn" title="Bold (Text tool)">B</button>
         <button id="underlineBtn" class="tool-btn toggle-btn" title="Underline (Text tool)"><span style="text-decoration: underline;">U</span></button>
       </div>
       <div class="controls">
+        <button id="undoBtn" class="secondary">Undo</button>
+        <button id="redoBtn" class="secondary">Redo</button>
         <button id="clearBtn" class="danger">Clear Board</button>
         <button id="saveBtn" class="secondary">Save PNG</button>
       </div>
@@ -186,12 +190,12 @@
     <div class="canvas-wrap">
       <canvas id="board" width="1400" height="900"></canvas>
       <div class="toolbar">
-        <span style="color:var(--muted); font-size:0.9rem;">Tools: Pen · Eraser · Text</span>
+        <span style="color:var(--muted); font-size:0.9rem;">Tools: Pen · Arrow · Eraser · Text</span>
       </div>
     </div>
   </div>
 
-  <script>
+    <script>
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d');
     const canvasWrap = document.querySelector('.canvas-wrap');
@@ -201,8 +205,11 @@
     const DRAG_START_THRESHOLD = 4; // pixels of movement before we treat it as a drag
     const EDIT_TAP_SLOP = 14; // allow small finger jitter to still count as an edit tap
     const TEXT_HIT_PADDING = 8; // extra hit area around text for easier taps
+    const MIN_ARROW_DISTANCE = 4;
 
     let drawing = false;
+    let drawingArrow = false;
+    let arrowPreview = null;
     let currentTool = 'pen';
     let activeTextInput = null;
     let currentStroke = null;
@@ -214,16 +221,23 @@
     let textBold = false;
     let textUnderline = false;
 
-    const strokes = [];
-    const texts = [];
+    let strokes = [];
+    let texts = [];
+    let arrows = [];
+
+    let history = [];
+    let historyIndex = -1;
 
     const colorPicker = document.getElementById('color');
     const sizeSlider = document.getElementById('size');
     const penBtn = document.getElementById('penBtn');
+    const arrowBtn = document.getElementById('arrowBtn');
     const eraseBtn = document.getElementById('eraseBtn');
     const textBtn = document.getElementById('textBtn');
     const boldBtn = document.getElementById('boldBtn');
     const underlineBtn = document.getElementById('underlineBtn');
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
     const clearBtn = document.getElementById('clearBtn');
     const saveBtn = document.getElementById('saveBtn');
 
@@ -262,6 +276,8 @@
 
     function resetPointerState() {
       drawing = false;
+      drawingArrow = false;
+      arrowPreview = null;
       currentStroke = null;
       draggingText = null;
       pointerDownOnText = null;
@@ -305,8 +321,9 @@
       pointerDownOnText = null;
       pointerDownBlank = null;
       draggingText = null;
-      [penBtn, eraseBtn, textBtn].forEach(btn => btn.classList.remove('active'));
+      [penBtn, arrowBtn, eraseBtn, textBtn].forEach(btn => btn.classList.remove('active'));
       if (tool === 'pen') penBtn.classList.add('active');
+      if (tool === 'arrow') arrowBtn.classList.add('active');
       if (tool === 'erase') eraseBtn.classList.add('active');
       if (tool === 'text') textBtn.classList.add('active');
       canvas.style.cursor = tool === 'text' ? 'text' : 'crosshair';
@@ -343,6 +360,47 @@
         ctx.lineTo(pts[i].x * scaleX, pts[i].y * scaleY);
       }
       ctx.stroke();
+    }
+
+    function drawArrow(arrow, canvasWidth, canvasHeight, isPreview = false) {
+      const scaleX = canvasWidth / arrow.baseWidth;
+      const scaleY = canvasHeight / arrow.baseHeight;
+      const startX = arrow.startX * scaleX;
+      const startY = arrow.startY * scaleY;
+      const endX = arrow.endX * scaleX;
+      const endY = arrow.endY * scaleY;
+      const lineWidth = arrow.size * ((scaleX + scaleY) / 2);
+
+      if (startX === endX && startY === endY) return;
+
+      ctx.save();
+      if (isPreview) ctx.globalAlpha = 0.6;
+      ctx.strokeStyle = arrow.color;
+      ctx.fillStyle = arrow.color;
+      ctx.lineWidth = lineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+
+      const angle = Math.atan2(endY - startY, endX - startX);
+      const headLength = Math.max(lineWidth * 4, 12);
+      const spread = Math.PI / 7;
+      const leftX = endX - headLength * Math.cos(angle - spread);
+      const leftY = endY - headLength * Math.sin(angle - spread);
+      const rightX = endX - headLength * Math.cos(angle + spread);
+      const rightY = endY - headLength * Math.sin(angle + spread);
+
+      ctx.beginPath();
+      ctx.moveTo(endX, endY);
+      ctx.lineTo(leftX, leftY);
+      ctx.lineTo(rightX, rightY);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
     }
 
     function measureTextBox(textObj) {
@@ -424,6 +482,8 @@
       clearCanvasArea();
       strokes.forEach(stroke => drawStroke(stroke, width, height));
       texts.forEach(textObj => drawText(textObj, width, height));
+      arrows.forEach(arrow => drawArrow(arrow, width, height));
+      if (arrowPreview) drawArrow(arrowPreview, width, height, true);
     }
 
     function start(e) {
@@ -463,6 +523,25 @@
         return;
       }
 
+      if (currentTool === 'arrow') {
+        commitActiveText();
+        drawingArrow = true;
+        const { width, height } = getCanvasCssSize();
+        arrowPreview = {
+          startX: pos.x,
+          startY: pos.y,
+          endX: pos.x,
+          endY: pos.y,
+          color: colorPicker.value,
+          size: parseInt(sizeSlider.value, 10),
+          baseWidth: width,
+          baseHeight: height
+        };
+        redrawAll();
+        return;
+      }
+
+      // Pen/Eraser mode
       commitActiveText();
       drawing = true;
       const { width, height } = getCanvasCssSize();
@@ -480,6 +559,7 @@
 
     function end(e) {
       if (e && (e.pointerType === 'touch' || e.touches)) e.preventDefault();
+      let textWasDragged = false;
 
       if (currentTool === 'text') {
         if (pointerDownOnText) {
@@ -490,6 +570,7 @@
             const metrics = measureTextBox(pointerDownOnText.textObj);
             placeTextInput({ x: metrics.x, y: metrics.y }, pointerDownOnText.textObj);
           } else {
+            textWasDragged = !!pointerDownOnText.dragging;
             redrawAll();
           }
         } else if (pointerDownBlank) {
@@ -498,9 +579,26 @@
             placeTextInput({ x: pointerDownBlank.startX, y: pointerDownBlank.startY });
           }
         }
+      } else if (currentTool === 'arrow') {
+        if (drawingArrow && arrowPreview) {
+          const dist = Math.hypot(arrowPreview.endX - arrowPreview.startX, arrowPreview.endY - arrowPreview.startY);
+          if (dist > MIN_ARROW_DISTANCE) {
+            arrows.push({ ...arrowPreview });
+            pushHistory();
+          }
+        }
+        drawingArrow = false;
+        arrowPreview = null;
       } else {
         // Pen/Eraser mode
         drawing = false;
+        if (currentStroke) {
+          if (currentStroke.points.length <= 1) {
+            strokes.pop();
+          } else {
+            pushHistory();
+          }
+        }
         currentStroke = null;
         canvas.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
       }
@@ -512,6 +610,8 @@
 
       activePointerId = null;
       redrawAll();
+
+      if (textWasDragged) pushHistory();
     }
 
     function draw(e) {
@@ -537,6 +637,14 @@
           const dist = Math.hypot(pos.x - pointerDownBlank.startX, pos.y - pointerDownBlank.startY);
           pointerDownBlank.maxDist = Math.max(pointerDownBlank.maxDist, dist);
         }
+        return;
+      }
+
+      if (currentTool === 'arrow') {
+        if (!drawingArrow || !arrowPreview) return;
+        arrowPreview.endX = pos.x;
+        arrowPreview.endY = pos.y;
+        redrawAll();
         return;
       }
 
@@ -662,11 +770,13 @@
       const baseWidth = parseFloat(activeTextInput.dataset.baseWidth);
       const baseHeight = parseFloat(activeTextInput.dataset.baseHeight);
       const editingTarget = activeTextInput._editingTarget || null;
+      const snapshotBefore = editingTarget ? { ...editingTarget } : null;
       const color = colorPicker.value;
       const bold = !!textBold;
       const underline = !!textUnderline;
       const fontSize = editingTarget ? (editingTarget.fontSize || DEFAULT_FONT_SIZE) : DEFAULT_FONT_SIZE;
       const fontFamily = editingTarget ? (editingTarget.fontFamily || FONT_FAMILY) : FONT_FAMILY;
+      let didChange = false;
 
       if (text.trim()) {
         if (editingTarget) {
@@ -680,6 +790,8 @@
           editingTarget.fontFamily = fontFamily;
           editingTarget.bold = bold;
           editingTarget.underline = underline;
+          const keys = ['text', 'x', 'y', 'baseWidth', 'baseHeight', 'color', 'fontSize', 'fontFamily', 'bold', 'underline'];
+          didChange = keys.some(k => editingTarget[k] !== (snapshotBefore ? snapshotBefore[k] : undefined));
         } else {
           texts.push({
             text,
@@ -693,17 +805,20 @@
             baseWidth,
             baseHeight
           });
+          didChange = true;
         }
         redrawAll();
       } else if (editingTarget) {
         const idx = texts.indexOf(editingTarget);
         if (idx !== -1) {
           texts.splice(idx, 1);
+          didChange = true;
           redrawAll();
         }
       }
 
       removeActiveText();
+      if (didChange) pushHistory();
     }
 
     function findTextAtPosition(pos) {
@@ -725,6 +840,70 @@
       return null;
     }
 
+    function cloneStroke(stroke) {
+      return { ...stroke, points: stroke.points.map(p => ({ ...p })) };
+    }
+
+    function cloneText(textObj) {
+      return { ...textObj };
+    }
+
+    function cloneArrow(arrow) {
+      return { ...arrow };
+    }
+
+    function snapshotState() {
+      return {
+        strokes: strokes.map(cloneStroke),
+        texts: texts.map(cloneText),
+        arrows: arrows.map(cloneArrow)
+      };
+    }
+
+    function loadState(state) {
+      strokes = state.strokes.map(cloneStroke);
+      texts = state.texts.map(cloneText);
+      arrows = state.arrows.map(cloneArrow);
+      drawing = false;
+      drawingArrow = false;
+      arrowPreview = null;
+      currentStroke = null;
+      draggingText = null;
+      pointerDownOnText = null;
+      pointerDownBlank = null;
+      activePointerId = null;
+      redrawAll();
+    }
+
+    function updateUndoRedoButtons() {
+      if (undoBtn) undoBtn.disabled = historyIndex <= 0;
+      if (redoBtn) redoBtn.disabled = historyIndex >= history.length - 1;
+    }
+
+    function pushHistory() {
+      const state = snapshotState();
+      history = history.slice(0, historyIndex + 1);
+      history.push(state);
+      historyIndex = history.length - 1;
+      updateUndoRedoButtons();
+    }
+
+    function undo() {
+      commitActiveText();
+      if (historyIndex <= 0) return;
+      historyIndex -= 1;
+      loadState(history[historyIndex]);
+      updateUndoRedoButtons();
+    }
+
+    function redo() {
+      commitActiveText();
+      if (historyIndex >= history.length - 1) return;
+      historyIndex += 1;
+      loadState(history[historyIndex]);
+      updateUndoRedoButtons();
+    }
+
     canvas.addEventListener('pointerdown', start);
     canvas.addEventListener('pointermove', draw);
     canvas.addEventListener('pointerup', end);
@@ -732,8 +911,12 @@
     canvas.addEventListener('pointerleave', end);
 
     penBtn.addEventListener('click', () => setTool('pen'));
+    arrowBtn.addEventListener('click', () => setTool('arrow'));
     eraseBtn.addEventListener('click', () => setTool('erase'));
     textBtn.addEventListener('click', () => setTool('text'));
+
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
 
     boldBtn.addEventListener('click', () => {
       textBold = !textBold;
@@ -748,10 +931,14 @@
     });
 
     clearBtn.addEventListener('click', () => {
+      commitActiveText();
       strokes.length = 0;
       texts.length = 0;
+      arrows.length = 0;
+      arrowPreview = null;
       clearCanvasArea();
       removeActiveText();
+      pushHistory();
     });
 
     saveBtn.addEventListener('click', () => {
@@ -763,10 +950,31 @@
       link.click();
     });
 
+    window.addEventListener('keydown', (e) => {
+      const target = e.target;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+      if (isInput) return;
+      const metaOrCtrl = e.metaKey || e.ctrlKey;
+      if (metaOrCtrl && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      } else if (metaOrCtrl && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    });
+
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
     setTool('pen');
     syncStyleToggles();
+    pushHistory();
+    updateUndoRedoButtons();
   </script>
+
 </body>
 </html>
